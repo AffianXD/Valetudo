@@ -44,6 +44,7 @@ class RoborockS5MaxValetudoRobot extends RoborockValetudoRobot {
         [
             capabilities.RoborockMultiMapPersistentMapControlCapability,
             capabilities.RoborockMultiMapMapResetCapability,
+            capabilities.RoborockMultiMapCapability,
             capabilities.RoborockMapSegmentationCapability,
             capabilities.RoborockMapSegmentEditCapability,
             capabilities.RoborockMapSegmentRenameCapability,

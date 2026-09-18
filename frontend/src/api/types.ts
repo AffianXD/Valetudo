@@ -28,6 +28,7 @@ export enum Capability {
     MapSegmentation = "MapSegmentationCapability",
     MapSnapshot = "MapSnapshotCapability",
     MappingPass = "MappingPassCapability",
+    MultiMap = "MultiMapCapability",
     MopDockMopWashTemperatureControl = "MopDockMopWashTemperatureControlCapability",
     MopDockMopDryingTimeControl = "MopDockMopDryingTimeControlCapability",
     ObstacleAvoidanceControl = "ObstacleAvoidanceControlCapability",
