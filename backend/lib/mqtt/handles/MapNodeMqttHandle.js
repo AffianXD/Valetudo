@@ -72,6 +72,11 @@ class MapNodeMqttHandle extends NodeMqttHandle {
                         res[segment.id] = segment.name ?? segment.id;
                     }
 
+                    Logger.debug("[MultiMapSegments] MQTT publish", {
+                        activeMapId: this.robot.capabilities?.[capabilities.MultiMapCapability.TYPE]?.getActiveMapId?.(),
+                        segmentIds: Object.keys(res)
+                    });
+
                     await this.controller.hassAnchorProvider.getAnchor(
                         HassAnchor.ANCHOR.MAP_SEGMENTS_LEN
                     ).post(Object.keys(res).length);

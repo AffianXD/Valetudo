@@ -1,3 +1,4 @@
+const Logger = require("../../../Logger");
 const MultiMapCapability = require("../../../core/capabilities/MultiMapCapability");
 const RobotFirmwareError = require("../../../core/RobotFirmwareError");
 const ValetudoMapSegment = require("../../../entities/core/ValetudoMapSegment");
@@ -21,6 +22,15 @@ class RoborockMultiMapCapability extends MultiMapCapability {
 
         /** @type {Map<string, string>} */
         this.mapNames = new Map();
+
+        /** @type {WeakMap<object, string>} */
+        this.parsedMapIds = new WeakMap();
+
+        /** @type {string|undefined} */
+        this.activeMapId = undefined;
+
+        /** @type {string|undefined} */
+        this.pendingMapId = undefined;
     }
 
     /**
@@ -51,7 +61,7 @@ class RoborockMultiMapCapability extends MultiMapCapability {
      */
     async getSegments() {
         const maps = await this.getMaps();
-        this.updateMapSegmentCache(this.robot.state?.map);
+        this.updateMapSegmentCache(this.robot.state?.map, undefined, "getSegments");
 
         const knownMapIds = new Set(maps.map(map => map.id));
         for (const mapId of this.mapSegmentCache.keys()) {
@@ -75,25 +85,57 @@ class RoborockMultiMapCapability extends MultiMapCapability {
             }
         }
 
-        return result.sort((a, b) => {
+        const sortedResult = result.sort((a, b) => {
             return a.id.localeCompare(b.id, undefined, {numeric: true});
         });
+
+        Logger.debug("[MultiMapSegments] union", {
+            activeMapId: this.getActiveMapId(),
+            cacheKeys: [...this.mapSegmentCache.keys()],
+            publicSegmentIds: sortedResult.map(segment => segment.id)
+        });
+
+        return sortedResult;
     }
 
     /**
      * Store the native segment data from a parsed Valetudo map.
      *
      * @param {import("../../../entities/map/ValetudoMap")} map
+     * @param {string=} mapId
+     * @param {string=} source
      */
-    updateMapSegmentCache(map) {
-        const mapId = this.getMapIdFromMap(map);
-        if (mapId === undefined || typeof map?.getSegments !== "function") {
+    updateMapSegmentCache(map, mapId, source = "unknown") {
+        const resolvedMapId = mapId === undefined ? this.getMapIdFromMap(map) : String(mapId);
+        const segmentLayers = Array.isArray(map?.layers) ? map.layers.filter(layer => {
+            return layer.type === "segment" && layer.metaData?.segmentId !== undefined;
+        }) : [];
+        const parsedSegments = typeof map?.getSegments === "function" ? map.getSegments() : [];
+        const nativeSegmentIds = parsedSegments.map(segment => {
+            const segmentId = String(segment.id);
+            const publicPrefix = resolvedMapId === undefined ? undefined : resolvedMapId + ":";
+
+            return publicPrefix && segmentId.startsWith(publicPrefix) ? segmentId.slice(publicPrefix.length) : segmentId;
+        });
+
+        Logger.debug("[MultiMapSegments] cache rebuild", {
+            source: source,
+            activeMapId: this.getActiveMapId(),
+            resolvedMapId: resolvedMapId,
+            parsedVendorMapId: map?.metaData?.vendorMapId,
+            segmentLayerCount: segmentLayers.length,
+            nativeSegmentIds: nativeSegmentIds,
+            names: parsedSegments.map(segment => segment.name),
+            cacheKeysBefore: [...this.mapSegmentCache.keys()]
+        });
+
+        if (resolvedMapId === undefined) {
             return;
         }
 
-        const segments = map.getSegments().map(segment => {
+        const segments = parsedSegments.map(segment => {
             let nativeSegmentId = String(segment.id);
-            const publicPrefix = mapId + ":";
+            const publicPrefix = resolvedMapId + ":";
 
             // This makes the method idempotent if a map has already been
             // decorated for public serialization.
@@ -108,9 +150,17 @@ class RoborockMultiMapCapability extends MultiMapCapability {
             };
         });
 
-        this.mapSegmentCache.set(mapId, {
+        this.mapSegmentCache.set(resolvedMapId, {
             segments: segments,
             stale: false
+        });
+        this.parsedMapIds.set(map, resolvedMapId);
+
+        Logger.debug("[MultiMapSegments] cache rebuilt", {
+            source: source,
+            activeMapId: this.getActiveMapId(),
+            parsedVendorMapId: map?.metaData?.vendorMapId,
+            cacheKeysAfter: [...this.mapSegmentCache.keys()]
         });
     }
 
@@ -126,6 +176,11 @@ class RoborockMultiMapCapability extends MultiMapCapability {
         if (entry) {
             entry.stale = true;
         }
+
+        Logger.debug("[MultiMapSegments] cache invalidated", {
+            mapId: String(mapId),
+            cacheKeys: [...this.mapSegmentCache.keys()]
+        });
     }
 
     /**
@@ -134,10 +189,11 @@ class RoborockMultiMapCapability extends MultiMapCapability {
      * Roborock command is sent.
      *
      * @param {import("../../../entities/map/ValetudoMap")} map
+     * @param {string=} mapId
      */
-    decorateMapWithPublicSegmentIds(map) {
-        const mapId = this.getMapIdFromMap(map);
-        if (mapId === undefined) {
+    decorateMapWithPublicSegmentIds(map, mapId) {
+        const resolvedMapId = mapId === undefined ? this.getMapIdFromMap(map) : String(mapId);
+        if (resolvedMapId === undefined) {
             return;
         }
 
@@ -147,8 +203,8 @@ class RoborockMultiMapCapability extends MultiMapCapability {
             }
 
             const nativeSegmentId = String(layer.metaData.segmentId);
-            if (!nativeSegmentId.startsWith(mapId + ":")) {
-                layer.metaData.segmentId = this.getPublicSegmentId(mapId, nativeSegmentId);
+            if (!nativeSegmentId.startsWith(resolvedMapId + ":")) {
+                layer.metaData.segmentId = this.getPublicSegmentId(resolvedMapId, nativeSegmentId);
             }
         });
     }
@@ -219,6 +275,40 @@ class RoborockMultiMapCapability extends MultiMapCapability {
     }
 
     /**
+     * Update the active public map ID from Roborock's map_status slot field.
+     * The slot is the same identifier used by load_multi_map and is separate
+     * from the RRMap header's vendorMapId.
+     *
+     * @param {number|string} mapId
+     */
+    updateActiveMapIdFromMapStatus(mapId) {
+        const normalizedMapId = String(mapId);
+
+        if (!/^[0-9]+$/.test(normalizedMapId) || normalizedMapId === "63") {
+            return;
+        }
+
+        if (this.pendingMapId !== undefined && this.pendingMapId !== normalizedMapId) {
+            Logger.debug("[MultiMapSegments] ignoring stale map_status while map load is pending", {
+                activeMapId: this.activeMapId,
+                pendingMapId: this.pendingMapId,
+                reportedMapId: normalizedMapId
+            });
+            return;
+        }
+
+        this.activeMapId = normalizedMapId;
+        if (this.pendingMapId === normalizedMapId) {
+            this.pendingMapId = undefined;
+        }
+
+        Logger.debug("[MultiMapSegments] active map updated from map_status", {
+            activeMapId: this.activeMapId,
+            pendingMapId: this.pendingMapId
+        });
+    }
+
+    /**
      * @param {string} mapId
      * @param {{id: string, name?: string}} segment
      * @returns {string}
@@ -263,17 +353,19 @@ class RoborockMultiMapCapability extends MultiMapCapability {
      * @returns {string|undefined}
      */
     getActiveMapId() {
-        const mapId = this.getMapIdFromMap(this.robot.state?.map);
-        if (mapId !== undefined) {
-            return mapId;
+        if (this.activeMapId !== undefined) {
+            return this.activeMapId;
         }
 
-        if (this.robot.vendorMapId !== undefined && this.robot.vendorMapId !== null) {
-            return String(this.robot.vendorMapId);
+        if (this.pendingMapId !== undefined) {
+            return this.pendingMapId;
         }
 
         if (this.robot.mapStatus?.mapSlotId !== undefined) {
-            return String(this.robot.mapStatus.mapSlotId);
+            const mapId = String(this.robot.mapStatus.mapSlotId);
+            if (mapId !== "63") {
+                return mapId;
+            }
         }
 
         return undefined;
@@ -284,8 +376,20 @@ class RoborockMultiMapCapability extends MultiMapCapability {
      * @returns {string|undefined}
      */
     getMapIdFromMap(map) {
-        const mapId = map?.metaData?.vendorMapId;
-        return mapId === undefined || mapId === null ? undefined : String(mapId);
+        if (map?.metaData?.vendorMapId === undefined) {
+            return undefined;
+        }
+
+        const parsedMapId = this.parsedMapIds.get(map);
+        if (parsedMapId !== undefined) {
+            return parsedMapId;
+        }
+
+        if (map !== this.robot.state?.map) {
+            return undefined;
+        }
+
+        return this.getActiveMapId();
     }
 
     /**
@@ -312,6 +416,13 @@ class RoborockMultiMapCapability extends MultiMapCapability {
             throw new RobotFirmwareError("Failed to load map: " + response);
         }
 
+        this.pendingMapId = id;
+        this.activeMapId = id;
+        Logger.debug("[MultiMapSegments] map load accepted", {
+            activeMapId: this.activeMapId,
+            pendingMapId: this.pendingMapId,
+            cacheKeys: [...this.mapSegmentCache.keys()]
+        });
         this.invalidateMapSegmentCache(id);
         this.robot.clearValetudoMap();
         await this.robot.pollMap();

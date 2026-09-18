@@ -1,7 +1,10 @@
 const assert = require("node:assert");
+const fs = require("node:fs");
+const path = require("node:path");
 const {describe, it} = require("node:test");
 
 const MultiMapCapability = require("../../../../lib/core/capabilities/MultiMapCapability");
+const RoborockMapParser = require("../../../../lib/robots/roborock/RoborockMapParser");
 const RoborockMapSegmentationCapability = require("../../../../lib/robots/roborock/capabilities/RoborockMapSegmentationCapability");
 const RoborockMultiMapCapability = require("../../../../lib/robots/roborock/capabilities/RoborockMultiMapCapability");
 const ValetudoMapSegment = require("../../../../lib/entities/core/ValetudoMapSegment");
@@ -36,6 +39,9 @@ function createRobot(activeMapId = 0) {
                 {id: "17", name: activeMapId === 0 ? "Living room" : "Bathroom"}
             ])
         },
+        mapStatus: {
+            mapSlotId: activeMapId
+        },
         sendCommand: async function(method, args, options) {
             calls.push({method: method, args: args, options: options});
 
@@ -62,11 +68,11 @@ function cacheBothMaps(multiMapCapability) {
     multiMapCapability.updateMapSegmentCache(createMap(0, [
         {id: "16", name: "Kitchen"},
         {id: "17", name: "Living room"}
-    ]));
+    ]), "0", "test");
     multiMapCapability.updateMapSegmentCache(createMap(1, [
         {id: "16", name: "Bedroom"},
         {id: "17", name: "Bathroom"}
-    ]));
+    ]), "1", "test");
 }
 
 describe("Roborock multi-map segment identities", () => {
@@ -82,6 +88,24 @@ describe("Roborock multi-map segment identities", () => {
         assert.strictEqual(robot.state.map.metaData.vendorMapId, 0);
     });
 
+    it("uses the S5 map_status slot instead of the RRMap vendorMapId", async () => {
+        const {multiMapCapability, robot} = createRobot();
+        const parsedMap = RoborockMapParser.PARSE(fs.readFileSync(path.join(
+            __dirname,
+            "res/map/S5_FW2008_with_segments.bin"
+        )));
+        robot.state.map = parsedMap;
+        robot.mapStatus.mapSlotId = 0;
+
+        multiMapCapability.updateMapSegmentCache(parsedMap, undefined, "test");
+
+        assert.deepStrictEqual(
+            (await multiMapCapability.getSegments()).map(segment => segment.id),
+            ["0:1", "0:2"]
+        );
+        assert.strictEqual(parsedMap.metaData.vendorMapId, 919);
+    });
+
     it("keeps the public union stable while changing the active map", async () => {
         const {multiMapCapability, robot} = createRobot();
         cacheBothMaps(multiMapCapability);
@@ -91,6 +115,7 @@ describe("Roborock multi-map segment identities", () => {
             {id: "16", name: "Bedroom"},
             {id: "17", name: "Bathroom"}
         ]);
+        robot.mapStatus.mapSlotId = 1;
         const after = (await multiMapCapability.getSegments()).map(segment => segment.id);
 
         assert.deepStrictEqual(after, before);
@@ -115,6 +140,7 @@ describe("Roborock multi-map segment identities", () => {
             {id: "16", name: "Bedroom"},
             {id: "17", name: "Bathroom"}
         ]);
+        robot.mapStatus.mapSlotId = 1;
         multiMapCapability.updateMapSegmentCache(robot.state.map);
         await segmentationCapability.executeSegmentAction([new ValetudoMapSegment({id: "1:16"})]);
     });
@@ -163,6 +189,7 @@ describe("Roborock multi-map segment identities", () => {
             {id: "16", name: "Bedroom"},
             {id: "17", name: "Bathroom"}
         ]);
+        robot.mapStatus.mapSlotId = 1;
         await assert.rejects(
             segmentationCapability.executeSegmentAction([new ValetudoMapSegment({id: "0:16"})]),
             /not currently active/
