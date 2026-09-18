@@ -66,6 +66,19 @@ class RobotRouter {
             }
         });
 
+        this.router.put("/state/map/refresh", async (req, res) => {
+            try {
+                this.robot.clearValetudoMap();
+
+                await this.robot.pollMap();
+
+                res.status(200).json({
+                    status: "ok"
+                });
+            } catch (err) {
+                res.status(500).send(err.toString());
+            }
+        });
 
         this.router.use("/capabilities/", new CapabilitiesRouter({
             robot: this.robot,
