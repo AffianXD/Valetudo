@@ -1,9 +1,23 @@
 const MapSegmentationCapability = require("../../../core/capabilities/MapSegmentationCapability");
+const MultiMapCapability = require("../../../core/capabilities/MultiMapCapability");
 
 /**
  * @extends MapSegmentationCapability<import("../RoborockValetudoRobot")>
  */
 class RoborockMapSegmentationCapability extends MapSegmentationCapability {
+    /**
+     * @returns {Promise<Array<import("../../../entities/core/ValetudoMapSegment")>>}
+     */
+    async getSegments() {
+        const multiMapCapability = this.robot.capabilities?.[MultiMapCapability.TYPE];
+
+        if (multiMapCapability?.getSegments) {
+            return multiMapCapability.getSegments();
+        }
+
+        return super.getSegments();
+    }
+
     /**
      * Could be phrased as "cleanSegments" for vacuums or "mowSegments" for lawnmowers
      *
@@ -15,7 +29,12 @@ class RoborockMapSegmentationCapability extends MapSegmentationCapability {
      * @returns {Promise<void>}
      */
     async executeSegmentAction(segments, options) {
-        const segmentIds = segments.map(segment => {
+        const multiMapCapability = this.robot.capabilities?.[MultiMapCapability.TYPE];
+        const nativeSegments = multiMapCapability?.resolveSegments ?
+            await multiMapCapability.resolveSegments(segments) :
+            segments;
+
+        const segmentIds = nativeSegments.map(segment => {
             return parseInt(segment.id);
         });
 

@@ -1,4 +1,5 @@
 const MapSegmentRenameCapability = require("../../../core/capabilities/MapSegmentRenameCapability");
+const MultiMapCapability = require("../../../core/capabilities/MultiMapCapability");
 
 /**
  * @extends MapSegmentRenameCapability<import("../RoborockValetudoRobot")>
@@ -17,12 +18,17 @@ class RoborockMapSegmentRenameCapability extends MapSegmentRenameCapability {
             throw new Error("Missing segmentNames in memory");
         }
 
+        const multiMapCapability = this.robot.capabilities?.[MultiMapCapability.TYPE];
+        const nativeSegment = multiMapCapability?.resolveSegments ?
+            (await multiMapCapability.resolveSegments([segment]))[0] :
+            segment;
+
         const payload = [
-            {miRoomId: name, robotRoomId: parseInt(segment.id)}
+            {miRoomId: name, robotRoomId: parseInt(nativeSegment.id)}
         ];
 
         Object.keys(this.segmentNames).forEach(k => {
-            if (parseInt(k) !== parseInt(segment.id)) {
+            if (parseInt(k) !== parseInt(nativeSegment.id)) {
                 payload.push({
                     miRoomId: this.segmentNames[k],
                     robotRoomId: parseInt(k)

@@ -511,6 +511,14 @@ class RoborockValetudoRobot extends MiioValetudoRobot {
                 });
             }
 
+            const multiMapCapability = this.capabilities[capabilities.RoborockMultiMapCapability.TYPE];
+            if (multiMapCapability) {
+                // Cache native IDs before changing the publicly exposed map
+                // layers to their stable map-qualified IDs.
+                multiMapCapability.updateMapSegmentCache(this.state.map);
+                multiMapCapability.decorateMapWithPublicSegmentIds(this.state.map);
+            }
+
             this.emitMapUpdated();
         }
 

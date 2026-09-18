@@ -1,10 +1,28 @@
 const MultiMapCapability = require("../../../core/capabilities/MultiMapCapability");
 const RobotFirmwareError = require("../../../core/RobotFirmwareError");
+const ValetudoMapSegment = require("../../../entities/core/ValetudoMapSegment");
 
 /**
  * @extends MultiMapCapability<import("../RoborockValetudoRobot")>
  */
 class RoborockMultiMapCapability extends MultiMapCapability {
+    constructor(options) {
+        super(options);
+
+        /**
+         * The map files exposed by the S5 Max don't contain Valetudo segment
+         * metadata. The parsed Valetudo map is therefore the source of truth
+         * for this cache. Entries are keyed by the native mapFlag and contain
+         * native segment IDs only.
+         *
+         * @type {Map<string, {segments: Array<{id: string, name?: string, material?: string}>, stale: boolean}>}
+         */
+        this.mapSegmentCache = new Map();
+
+        /** @type {Map<string, string>} */
+        this.mapNames = new Map();
+    }
+
     /**
      * @returns {Promise<Array<{id: string, name: string}>>}
      */
@@ -12,11 +30,262 @@ class RoborockMultiMapCapability extends MultiMapCapability {
         const mapList = await this.getNativeMapList();
 
         return mapList.map_info.map(mapInfo => {
+            const id = String(mapInfo.mapFlag);
+
+            this.mapNames.set(id, typeof mapInfo.name === "string" ? mapInfo.name : "");
+
             return {
-                id: String(mapInfo.mapFlag),
+                id: id,
                 name: typeof mapInfo.name === "string" ? mapInfo.name : ""
             };
         });
+    }
+
+    /**
+     * Returns the stable public segment union for all map data known to
+     * Valetudo. The active map is captured here as a fallback for startup and
+     * normal map polling; subsequent map switches add their parsed map to the
+     * same cache.
+     *
+     * @returns {Promise<Array<import("../../../entities/core/ValetudoMapSegment")>>}
+     */
+    async getSegments() {
+        const maps = await this.getMaps();
+        this.updateMapSegmentCache(this.robot.state?.map);
+
+        const knownMapIds = new Set(maps.map(map => map.id));
+        for (const mapId of this.mapSegmentCache.keys()) {
+            if (!knownMapIds.has(mapId)) {
+                this.mapSegmentCache.delete(mapId);
+            }
+        }
+        const result = [];
+
+        for (const [mapId, entry] of this.mapSegmentCache.entries()) {
+            if (!knownMapIds.has(mapId)) {
+                continue;
+            }
+
+            for (const segment of entry.segments) {
+                result.push(new ValetudoMapSegment({
+                    id: this.getPublicSegmentId(mapId, segment.id),
+                    name: this.getPublicSegmentName(mapId, segment),
+                    material: segment.material
+                }));
+            }
+        }
+
+        return result.sort((a, b) => {
+            return a.id.localeCompare(b.id, undefined, {numeric: true});
+        });
+    }
+
+    /**
+     * Store the native segment data from a parsed Valetudo map.
+     *
+     * @param {import("../../../entities/map/ValetudoMap")} map
+     */
+    updateMapSegmentCache(map) {
+        const mapId = this.getMapIdFromMap(map);
+        if (mapId === undefined || typeof map?.getSegments !== "function") {
+            return;
+        }
+
+        const segments = map.getSegments().map(segment => {
+            let nativeSegmentId = String(segment.id);
+            const publicPrefix = mapId + ":";
+
+            // This makes the method idempotent if a map has already been
+            // decorated for public serialization.
+            if (nativeSegmentId.startsWith(publicPrefix)) {
+                nativeSegmentId = nativeSegmentId.slice(publicPrefix.length);
+            }
+
+            return {
+                id: nativeSegmentId,
+                name: segment.name,
+                material: segment.material
+            };
+        });
+
+        this.mapSegmentCache.set(mapId, {
+            segments: segments,
+            stale: false
+        });
+    }
+
+    /**
+     * Mark a map's segment cache as requiring a rebuild. The old snapshot is
+     * retained for stable publication while the new map is being fetched, but
+     * it cannot be used to execute a cleaning action until rebuilt.
+     *
+     * @param {string} mapId
+     */
+    invalidateMapSegmentCache(mapId) {
+        const entry = this.mapSegmentCache.get(String(mapId));
+        if (entry) {
+            entry.stale = true;
+        }
+    }
+
+    /**
+     * Decorate the currently exposed Valetudo map with stable public segment
+     * IDs. Native IDs remain in mapSegmentCache and are restored only when a
+     * Roborock command is sent.
+     *
+     * @param {import("../../../entities/map/ValetudoMap")} map
+     */
+    decorateMapWithPublicSegmentIds(map) {
+        const mapId = this.getMapIdFromMap(map);
+        if (mapId === undefined) {
+            return;
+        }
+
+        map.layers.forEach(layer => {
+            if (layer.type !== "segment" || layer.metaData?.segmentId === undefined) {
+                return;
+            }
+
+            const nativeSegmentId = String(layer.metaData.segmentId);
+            if (!nativeSegmentId.startsWith(mapId + ":")) {
+                layer.metaData.segmentId = this.getPublicSegmentId(mapId, nativeSegmentId);
+            }
+        });
+    }
+
+    /**
+     * Resolve public segment objects to native segment objects after checking
+     * map ownership and the active map.
+     *
+     * @param {Array<import("../../../entities/core/ValetudoMapSegment")>} segments
+     * @returns {Promise<Array<import("../../../entities/core/ValetudoMapSegment")>>}
+     */
+    async resolveSegments(segments) {
+        const publicSegments = await this.getSegments();
+        const publicSegmentById = new Map(publicSegments.map(segment => {
+            return [segment.id, segment];
+        }));
+
+        const resolved = [];
+        const mapIds = new Set();
+
+        for (const segment of segments) {
+            const parsedId = this.parsePublicSegmentId(segment?.id);
+            const publicSegmentId = parsedId && this.getPublicSegmentId(parsedId.mapId, parsedId.nativeSegmentId);
+
+            if (!publicSegmentId) {
+                throw new Error(`Malformed multi-map segment ID: ${segment?.id}. Expected "<mapId>:<nativeSegmentId>"`);
+            }
+
+            const matchingSegment = publicSegmentById.get(publicSegmentId);
+            if (!matchingSegment) {
+                throw new Error(`Unknown multi-map segment ID: ${segment.id}`);
+            }
+
+            const entry = this.mapSegmentCache.get(parsedId.mapId);
+            if (!entry || entry.stale) {
+                throw new Error(`Segment mapping for map ${parsedId.mapId} is not ready`);
+            }
+
+            mapIds.add(parsedId.mapId);
+            resolved.push(new ValetudoMapSegment({
+                id: parsedId.nativeSegmentId,
+                name: matchingSegment.name,
+                material: matchingSegment.material,
+                metaData: {
+                    mapId: parsedId.mapId,
+                    nativeSegmentId: parsedId.nativeSegmentId
+                }
+            }));
+        }
+
+        if (mapIds.size > 1) {
+            throw new Error("Segments from multiple maps cannot be cleaned together");
+        }
+
+        if (mapIds.size === 1) {
+            const selectedMapId = [...mapIds][0];
+            const activeMapId = this.getActiveMapId();
+
+            if (activeMapId === undefined) {
+                throw new Error("Unable to determine the currently active map");
+            }
+            if (selectedMapId !== activeMapId) {
+                throw new Error(`Map ${selectedMapId} is not currently active (active map: ${activeMapId})`);
+            }
+        }
+
+        return resolved;
+    }
+
+    /**
+     * @param {string} mapId
+     * @param {{id: string, name?: string}} segment
+     * @returns {string}
+     */
+    getPublicSegmentName(mapId, segment) {
+        const mapName = this.mapNames.get(mapId)?.trim();
+        const segmentName = typeof segment.name === "string" && segment.name.trim() !== "" ? segment.name.trim() : segment.id;
+
+        return `${mapName || `Map ${mapId}`} · ${segmentName}`;
+    }
+
+    /**
+     * @param {string} mapId
+     * @param {string} nativeSegmentId
+     * @returns {string}
+     */
+    getPublicSegmentId(mapId, nativeSegmentId) {
+        return `${mapId}:${nativeSegmentId}`;
+    }
+
+    /**
+     * @param {string} id
+     * @returns {{mapId: string, nativeSegmentId: string}|undefined}
+     */
+    parsePublicSegmentId(id) {
+        if (typeof id !== "string") {
+            return undefined;
+        }
+
+        const match = /^([0-9]+):([0-9]+)$/.exec(id);
+        if (!match || match[1] !== String(Number(match[1])) || match[2] !== String(Number(match[2]))) {
+            return undefined;
+        }
+
+        return {
+            mapId: match[1],
+            nativeSegmentId: match[2]
+        };
+    }
+
+    /**
+     * @returns {string|undefined}
+     */
+    getActiveMapId() {
+        const mapId = this.getMapIdFromMap(this.robot.state?.map);
+        if (mapId !== undefined) {
+            return mapId;
+        }
+
+        if (this.robot.vendorMapId !== undefined && this.robot.vendorMapId !== null) {
+            return String(this.robot.vendorMapId);
+        }
+
+        if (this.robot.mapStatus?.mapSlotId !== undefined) {
+            return String(this.robot.mapStatus.mapSlotId);
+        }
+
+        return undefined;
+    }
+
+    /**
+     * @param {import("../../../entities/map/ValetudoMap")} map
+     * @returns {string|undefined}
+     */
+    getMapIdFromMap(map) {
+        const mapId = map?.metaData?.vendorMapId;
+        return mapId === undefined || mapId === null ? undefined : String(mapId);
     }
 
     /**
@@ -43,6 +312,7 @@ class RoborockMultiMapCapability extends MultiMapCapability {
             throw new RobotFirmwareError("Failed to load map: " + response);
         }
 
+        this.invalidateMapSegmentCache(id);
         this.robot.clearValetudoMap();
         await this.robot.pollMap();
     }

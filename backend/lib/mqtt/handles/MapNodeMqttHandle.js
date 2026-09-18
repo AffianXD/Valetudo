@@ -1,3 +1,4 @@
+const capabilities = require("../../core/capabilities");
 const ComponentType = require("../homeassistant/ComponentType");
 const crc = require("crc");
 const DataType = require("../homie/DataType");
@@ -52,12 +53,22 @@ class MapNodeMqttHandle extends NodeMqttHandle {
                 datatype: DataType.STRING,
                 format: "json",
                 getter: async () => {
-                    if (this.robot.state.map === null || !(this.controller.currentConfig.customizations.provideMapData ?? true)|| !this.controller.isInitialized) {
+                    const segmentationCapability = this.robot.capabilities?.[capabilities.MapSegmentationCapability.TYPE];
+
+                    if (
+                        (this.robot.state.map === null && segmentationCapability === undefined) ||
+                        !(this.controller.currentConfig.customizations.provideMapData ?? true) ||
+                        !this.controller.isInitialized
+                    ) {
                         return {};
                     }
 
                     const res = {};
-                    for (const segment of this.robot.state.map.getSegments()) {
+                    const segments = segmentationCapability ?
+                        await segmentationCapability.getSegments() :
+                        this.robot.state.map.getSegments();
+
+                    for (const segment of segments) {
                         res[segment.id] = segment.name ?? segment.id;
                     }
 
