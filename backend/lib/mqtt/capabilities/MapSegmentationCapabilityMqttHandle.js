@@ -2,6 +2,7 @@ const CapabilityMqttHandle = require("./CapabilityMqttHandle");
 const DataType = require("../homie/DataType");
 const HassAnchor = require("../homeassistant/HassAnchor");
 const Logger = require("../../Logger");
+const MultiMapCapability = require("../../core/capabilities/MultiMapCapability");
 const PropertyMqttHandle = require("../handles/PropertyMqttHandle");
 
 class MapSegmentationCapabilityMqttHandle extends CapabilityMqttHandle {
@@ -17,6 +18,9 @@ class MapSegmentationCapabilityMqttHandle extends CapabilityMqttHandle {
             friendlyName: "Segment cleaning"
         }));
         this.capability = options.capability;
+        const sampleSegmentIds = this.robot.hasCapability(MultiMapCapability.TYPE) ?
+            ["0:20", "0:18", "0:16"] :
+            ["20", "18", "16"];
 
         this.registerChild(new PropertyMqttHandle({
             parent: this,
@@ -64,11 +68,7 @@ class MapSegmentationCapabilityMqttHandle extends CapabilityMqttHandle {
                 "Sample payload:\n\n" +
                 "```json\n" +
                 JSON.stringify({
-                    segment_ids: [
-                        "20",
-                        "18",
-                        "16"
-                    ],
+                    segment_ids: sampleSegmentIds,
                     iterations: 2,
                     customOrder: true
                 }, null, 2) +

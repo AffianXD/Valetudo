@@ -30,6 +30,7 @@ module.exports = {
     RoborockMopDockDryManualTriggerCapability: require("./RoborockMopDockDryManualTriggerCapability"),
     RoborockMopDockMopAutoDryingControlCapability: require("./RoborockMopDockMopAutoDryingControlCapability"),
     RoborockMopDockMopDryingTimeControlCapability: require("./RoborockMopDockMopDryingTimeControlCapability"),
+    RoborockMultiMapCapability: require("./RoborockMultiMapCapability"),
     RoborockMultiMapMapResetCapability: require("./RoborockMultiMapMapResetCapability"),
     RoborockMultiMapPersistentMapControlCapability: require("./RoborockMultiMapPersistentMapControlCapability"),
     RoborockObstacleAvoidanceControlCapability: require("./RoborockObstacleAvoidanceControlCapability"),

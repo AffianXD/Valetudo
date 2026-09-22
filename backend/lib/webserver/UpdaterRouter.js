@@ -75,7 +75,13 @@ class UpdaterRouter {
                             type: "github_nightly",
                             implementationSpecificConfig: {}
                         };
-
+                        break;
+                    case "self_hosted":
+                        newUpdateProviderConfig = {
+                            type: "self_hosted",
+                            implementationSpecificConfig:
+                                currentConfig.updateProvider.implementationSpecificConfig ?? {}
+                        };
                         break;
                 }
 

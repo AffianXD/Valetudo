@@ -66,7 +66,6 @@ class RobotRouter {
             }
         });
 
-
         this.router.use("/capabilities/", new CapabilitiesRouter({
             robot: this.robot,
             validator: this.validator

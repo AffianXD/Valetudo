@@ -434,11 +434,35 @@ class RoborockValetudoRobot extends MiioValetudoRobot {
                 M being a "map present" flag
              */
 
+            const multiMapCapability = this.capabilities[capabilities.RoborockMultiMapCapability.TYPE];
+            const previousMapId = multiMapCapability?.getActiveMapId?.();
+
             this.mapStatus = {
                 mapPresent: !!(data["map_status"] & 0b00000001),
                 segmentsPresent: !!(data["map_status"] & 0b00000010),
                 mapSlotId: data["map_status"] >> 2
             };
+
+            if (multiMapCapability?.updateActiveMapIdFromMapStatus) {
+                multiMapCapability.updateActiveMapIdFromMapStatus(this.mapStatus.mapSlotId);
+                const currentMapId = multiMapCapability.getActiveMapId();
+                const parsedMapId = multiMapCapability.getMapIdFromMap(this.state.map);
+
+                if (this.state.map?.metaData?.vendorMapId !== undefined && (parsedMapId === undefined || parsedMapId === currentMapId)) {
+                    multiMapCapability.updateMapSegmentCache(this.state.map, undefined, "mapStatus");
+                    multiMapCapability.decorateMapWithPublicSegmentIds(this.state.map);
+
+                    if (previousMapId !== currentMapId) {
+                        this.emitMapUpdated();
+                    }
+                } else if (parsedMapId !== undefined && parsedMapId !== currentMapId) {
+                    Logger.debug("[MultiMapSegments] waiting for map poll after map_status change", {
+                        activeMapId: currentMapId,
+                        parsedMapId: parsedMapId,
+                        parsedVendorMapId: this.state.map?.metaData?.vendorMapId
+                    });
+                }
+            }
         }
 
         this.emitStateAttributesUpdated();
@@ -509,6 +533,14 @@ class RoborockValetudoRobot extends MiioValetudoRobot {
                         layer.metaData.name = this.capabilities[capabilities.RoborockMapSegmentRenameCapability.TYPE].segmentNames[layer.metaData.segmentId];
                     }
                 });
+            }
+
+            const multiMapCapability = this.capabilities[capabilities.RoborockMultiMapCapability.TYPE];
+            if (multiMapCapability) {
+                // Cache native IDs before changing the publicly exposed map
+                // layers to their stable map-qualified IDs.
+                multiMapCapability.updateMapSegmentCache(this.state.map, undefined, "parseMap");
+                multiMapCapability.decorateMapWithPublicSegmentIds(this.state.map);
             }
 
             this.emitMapUpdated();
